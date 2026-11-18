@@ -181,12 +181,14 @@ export function renderSourceHashes(hashes: SourceHashes): string {
   // movement. Two-space indent and a trailing newline are what prettier writes,
   // so a formatter check over the tree stays clean without a post step. The
   // explicit comparator is the default string sort's UTF-16 code-unit order,
-  // independent of locale.
-  const ordered: SourceHashes = {};
+  // independent of locale. Null-prototype maps, because assigning a key named
+  // `__proto__` into an ordinary object sets its prototype instead of storing
+  // the entry, and the fingerprint would be dropped from the file.
+  const ordered: SourceHashes = Object.create(null) as SourceHashes;
   for (const [group, groupHashes] of Object.entries(hashes).sort(([a], [b]) =>
     a < b ? -1 : a > b ? 1 : 0,
   )) {
-    const inner: Record<string, string> = {};
+    const inner = Object.create(null) as Record<string, string>;
     for (const [entry, hash] of Object.entries(groupHashes).sort(([a], [b]) =>
       a < b ? -1 : a > b ? 1 : 0,
     )) {

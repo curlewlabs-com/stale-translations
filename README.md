@@ -96,11 +96,12 @@ function own<T>(
 }
 
 const existing = await loadSourceHashes(SIDECAR);
-const updated: SourceHashes = {};
+// Null-prototype maps, so a key named `__proto__` is stored like any other.
+const updated = Object.create(null) as SourceHashes;
 const stale: string[] = [];
 
 for (const [locale, messages] of Object.entries(translations)) {
-  const group: Record<string, string> = {};
+  const group = Object.create(null) as Record<string, string>;
   for (const [key, text] of Object.entries(messages)) {
     const sourceText = own(source, key);
     if (sourceText === undefined) continue;
@@ -177,12 +178,6 @@ the wrong shape. The message names the file by its basename.
 whatever lets a reader find the string. `validateContainerShape(value, label)`
 is the container check on its own, for a sidecar value you did not read with
 `loadSourceHashes`.
-
-## Known issues
-
-- A group or entry named `__proto__` is not kept. `renderSourceHashes` builds
-  ordinary objects, where assigning that key sets the prototype instead of
-  storing an entry, so its fingerprint is dropped from the file it writes.
 
 ## Runtime requirements
 

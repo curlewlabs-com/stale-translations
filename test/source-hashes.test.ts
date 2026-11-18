@@ -267,9 +267,9 @@ describe("a tracker over one message catalog", () => {
     existing: SourceHashes,
   ): { stale: string[]; updated: SourceHashes } {
     const stale: string[] = [];
-    const updated: SourceHashes = {};
+    const updated = Object.create(null) as SourceHashes;
     for (const [locale, messages] of Object.entries(translations)) {
-      const group: Record<string, string> = {};
+      const group = Object.create(null) as Record<string, string>;
       for (const [key, text] of Object.entries(messages)) {
         const sourceText = own(source, key);
         if (sourceText === undefined) continue;
@@ -324,5 +324,36 @@ describe("a tracker over one message catalog", () => {
       out.updated["fr"]?.["constructor"] ?? "",
       /^[0-9a-f]{8}:[0-9a-f]{8}$/,
     );
+  });
+
+  it("keeps a group and an entry named __proto__ through a write and a reword", async () => {
+    // JSON.parse stores "__proto__" as an own key, but assigning it into an
+    // ordinary object sets the prototype instead, so its fingerprint would be
+    // lost on write and the next reword would read as a first sighting.
+    const source = JSON.parse('{"__proto__": "Hello"}') as Record<
+      string,
+      string
+    >;
+    const translations = JSON.parse(
+      '{"__proto__": {"__proto__": "Bonjour"}}',
+    ) as Record<string, Record<string, string>>;
+    const first = track(source, translations, {});
+
+    const dir = await mkdtemp(join(tmpdir(), "stale-translations-"));
+    const path = join(dir, LABEL);
+    await writeFile(path, renderSourceHashes(first.updated), "utf-8");
+    const stored = await loadSourceHashes(path);
+    assert.match(
+      JSON.stringify(stored),
+      /^\{"__proto__":\{"__proto__":"[0-9a-f]{8}:[0-9a-f]{8}"\}\}$/,
+    );
+
+    const reworded = JSON.parse('{"__proto__": "Hi there"}') as Record<
+      string,
+      string
+    >;
+    assert.deepEqual(track(reworded, translations, stored).stale, [
+      "__proto__.__proto__",
+    ]);
   });
 });
