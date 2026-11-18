@@ -171,8 +171,11 @@ the translation was made from.
 ### Errors
 
 `loadSourceHashes` returns `{}` for a missing file and throws for anything else
-it cannot read: another read error, a file that is not JSON, or a container of
-the wrong shape. The message names the file by its basename.
+it cannot read. A container of the wrong shape is reported with the file's
+basename. Any other read error is rethrown as the runtime raised it, and a file
+that is not JSON throws the parser's `SyntaxError`; neither is sure to name the
+file, so a tracker reading several sidecars says which one when it catches
+them.
 `classifyHashPair` throws for a value that is neither a hash pair nor
 `"refresh"`, naming `fileLabel` and `locator`; pass the sidecar's file name and
 whatever lets a reader find the string. `validateContainerShape(value, label)`
