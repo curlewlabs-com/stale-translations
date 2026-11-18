@@ -16,6 +16,10 @@ npm run typecheck
 npm test
 ```
 
+eslint runs in CI through ci-baseline. To run the same check locally, after
+installing dependencies: `<a ci-baseline checkout>/lib/lint-local.sh`. It runs
+the ci-baseline commit this repository's workflows pin.
+
 ## Before a large change
 
 Open an issue describing the problem first. The sidecar format - SHA-256 cut
