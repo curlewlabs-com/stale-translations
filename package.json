@@ -1,0 +1,34 @@
+{
+  "name": "@curlewlabs-com/stale-translations",
+  "version": "0.1.0",
+  "description": "Flag translations whose source text was reworded after they were translated, from a small hash sidecar kept beside the catalogs.",
+  "license": "MIT OR Apache-2.0",
+  "author": "Curlew Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/curlewlabs-com/stale-translations.git"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/source-hashes.d.ts",
+      "default": "./dist/source-hashes.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test \"test/*.test.ts\"",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
