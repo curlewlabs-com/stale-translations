@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.ref_name == 'main' && github.run_id || 'pr' }}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # renovate: datasource=node-version depName=node
+          node-version: 24.22.2
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      # The tests import the TypeScript source; this proves the tarball a
+      # consumer installs carries the built entry point and that it loads.
+      - name: Install the packed tarball and import it
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir "$consumer"
+          cd "$consumer"
+          npm init --yes >/dev/null
+          # Extracted rather than installed: the package has no dependencies,
+          # scripts or bins, so this is the tree npm would write, by no command
+          # that could reach the registry. A dependency added later fails the
+          # import below rather than passing unnoticed.
+          mkdir -p node_modules/@curlewlabs-com/stale-translations
+          tar -xzf "$RUNNER_TEMP"/curlewlabs-com-stale-translations-*.tgz --strip-components=1 \
+            -C node_modules/@curlewlabs-com/stale-translations
+          node --input-type=module -e '
+            import { classifyHashPair, hashValue, loadSourceHashes, renderSourceHashes } from "@curlewlabs-com/stale-translations";
+            const stored = hashValue("Hello") + ":" + hashValue("Bonjour");
+            const outcome = classifyHashPair(stored, hashValue("Hi there"), hashValue("Bonjour"), "fr.greeting", "hashes.json");
+            if (!outcome.stale) throw new Error("a reworded source was not flagged");
+            if (renderSourceHashes({}) !== "{}\n") throw new Error("unexpected render");
+            const missing = await loadSourceHashes("does-not-exist.json");
+            if (Object.keys(missing).length !== 0) throw new Error("missing sidecar was not empty");
+          '
+
+  baseline:
+    # The checks every Curlew Labs repository runs, in one place:
+    # https://github.com/curlewlabs-com/ci-baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: curlewlabs-com/ci-baseline@f05f17a38ba2dfbaf0cde130a375b346e9a923a2 # v0.2.0
+
+  conclusion:
+    # The one check branch protection requires, so adding a job means listing it
+    # here rather than in the repository settings.
+    needs: [test, baseline]
+    runs-on: ubuntu-24.04
+    if: always()
+    steps:
+      - name: Require every job to pass
+        env:
+          TEST: ${{ needs.test.result }}
+          BASELINE: ${{ needs.baseline.result }}
+        run: test "$TEST" = success && test "$BASELINE" = success
