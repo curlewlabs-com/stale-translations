@@ -86,6 +86,15 @@ const translations: Record<string, Record<string, string>> = {
   fr: { greeting: "Bonjour" },
 };
 
+// Own keys only: a message key such as "constructor" must not resolve to a
+// member every object inherits.
+function own<T>(
+  map: Record<string, T> | undefined,
+  key: string,
+): T | undefined {
+  return map !== undefined && Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
 const existing = await loadSourceHashes(SIDECAR);
 const updated: SourceHashes = {};
 const stale: string[] = [];
@@ -93,10 +102,10 @@ const stale: string[] = [];
 for (const [locale, messages] of Object.entries(translations)) {
   const group: Record<string, string> = {};
   for (const [key, text] of Object.entries(messages)) {
-    const sourceText = source[key];
+    const sourceText = own(source, key);
     if (sourceText === undefined) continue;
     const outcome = classifyHashPair(
-      existing[locale]?.[key],
+      own(own(existing, locale), key),
       hashValue(sourceText),
       hashValue(text),
       `${locale}.${key}`,
@@ -109,12 +118,16 @@ for (const [locale, messages] of Object.entries(translations)) {
 }
 
 await writeFile(SIDECAR, renderSourceHashes(updated));
-console.log(stale.length === 0 ? "all current" : `stale: ${stale.join(", ")}`);
+if (stale.length > 0) {
+  console.error(`stale: ${stale.join(", ")}`);
+  process.exitCode = 1;
+}
 ```
 
-Commit the sidecar with the catalogs. Run the tracker wherever you regenerate
-from them. A check that the committed sidecar matches a fresh run then catches
-a source edit that landed without one.
+Commit the sidecar with the catalogs, and act on the `stale` list: fail the
+build on it, as above, or write it to a report you commit beside the sidecar.
+The sidecar alone does not show a reword: a stale entry keeps its stored pair,
+so the file a run writes after a reword is byte for byte the one before it.
 
 The first run, with no sidecar, records every translation as fresh: the
 tracker can only see rewording that happens after it starts. A string that is
@@ -164,6 +177,12 @@ the wrong shape. The message names the file by its basename.
 whatever lets a reader find the string. `validateContainerShape(value, label)`
 is the container check on its own, for a sidecar value you did not read with
 `loadSourceHashes`.
+
+## Known issues
+
+- A group or entry named `__proto__` is not kept. `renderSourceHashes` builds
+  ordinary objects, where assigning that key sets the prototype instead of
+  storing an entry, so its fingerprint is dropped from the file it writes.
 
 ## Runtime requirements
 

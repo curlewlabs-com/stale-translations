@@ -198,14 +198,24 @@ export function renderSourceHashes(hashes: SourceHashes): string {
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  // JSON.parse produces only plain objects, arrays, primitives, and null;
-  // anything that is `typeof "object"`, not null, and not an array is a plain
-  // object for our purposes. No Date/Map/Set survive a parse round-trip.
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  // JSON.parse produces only plain objects, arrays, primitives, and null, but a
+  // value built in code can be anything. A Map or class instance has no own
+  // enumerable entries, so it would pass every per-entry check and read as
+  // "no entry yet" for each string under it; only an object whose prototype is
+  // Object.prototype (or none) holds its entries as properties.
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
 }
 
 function describeType(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "array";
+  if (typeof value === "object" && !isPlainObject(value)) {
+    // "[object Map]" -> "Map": "got object" would not say what was wrong.
+    return Object.prototype.toString.call(value).slice(8, -1);
+  }
   return typeof value;
 }

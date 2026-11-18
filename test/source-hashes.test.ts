@@ -130,6 +130,32 @@ describe("validateContainerShape", () => {
     }
   });
 
+  it("refuses a container that is an object without holding its entries as properties", () => {
+    // A Map or class instance has no own enumerable entries, so it would pass
+    // every per-entry check and read as "no entry yet" for each string, which
+    // clears every stale flag under it.
+    class Hashes {
+      fr = { greeting: "deadbeef:cafebabe" };
+    }
+    for (const [bad, message] of [
+      [new Map([["fr", {}]]), /top-level must be an object .* got Map\./],
+      [new Hashes(), /top-level must be an object .* got Object\./],
+      [
+        { fr: new Map([["greeting", 123]]) },
+        /group "fr" must be an object .* got Map\./,
+      ],
+      [{ fr: new Date(0) }, /group "fr" must be an object .* got Date\./],
+    ] as const) {
+      assert.throws(() => validateContainerShape(bad, LABEL), message);
+    }
+  });
+
+  it("accepts an object with no prototype", () => {
+    const hashes = Object.create(null) as SourceHashes;
+    hashes["fr"] = { greeting: "deadbeef:cafebabe" };
+    assert.doesNotThrow(() => validateContainerShape(hashes, LABEL));
+  });
+
   it("accepts a well-formed two-level container", () => {
     assert.doesNotThrow(() =>
       validateContainerShape({ es: { a: "deadbeef:cafebabe" } }, LABEL),
@@ -228,6 +254,13 @@ describe("hashValue", () => {
 // The loop the README shows, run end to end: a reword flags the translation,
 // and both ways of clearing the flag clear it.
 describe("a tracker over one message catalog", () => {
+  function own<T>(
+    map: Record<string, T> | undefined,
+    key: string,
+  ): T | undefined {
+    return map !== undefined && Object.hasOwn(map, key) ? map[key] : undefined;
+  }
+
   function track(
     source: Record<string, string>,
     translations: Record<string, Record<string, string>>,
@@ -238,10 +271,10 @@ describe("a tracker over one message catalog", () => {
     for (const [locale, messages] of Object.entries(translations)) {
       const group: Record<string, string> = {};
       for (const [key, text] of Object.entries(messages)) {
-        const sourceText = source[key];
+        const sourceText = own(source, key);
         if (sourceText === undefined) continue;
         const outcome = classifyHashPair(
-          existing[locale]?.[key],
+          own(own(existing, locale), key),
           hashValue(sourceText),
           hashValue(text),
           `${locale}.${key}`,
@@ -275,5 +308,21 @@ describe("a tracker over one message catalog", () => {
       fr: { ...second.updated["fr"], greeting: REFRESH_SENTINEL },
     };
     assert.deepEqual(track(reworded, fr, affirmed).stale, []);
+  });
+
+  it("reads a key named like an inherited member as unseen, not as damage", () => {
+    // Without own-key lookups, "constructor" resolves to Object's own
+    // constructor, which is neither undefined nor a hash pair, and the run
+    // throws on a sidecar that is fine.
+    const out = track(
+      { constructor: "Build" },
+      { fr: { constructor: "Construire" } },
+      { fr: {} },
+    );
+    assert.deepEqual(out.stale, []);
+    assert.match(
+      out.updated["fr"]?.["constructor"] ?? "",
+      /^[0-9a-f]{8}:[0-9a-f]{8}$/,
+    );
   });
 });
