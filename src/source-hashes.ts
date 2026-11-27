@@ -1,5 +1,6 @@
 // The source-hash sidecar: what each translation was translated from, and the
-// fail-closed rules for reading, classifying and writing it back.
+// fail-closed rules for reading it, classifying each translation against it,
+// and building the next one from a caller's (source, translation) pairs.
 //
 // Model (the one Weblate, Crowdin and Pontoon use inside their databases, kept
 // here in a file beside the catalogs): alongside each translation, store a
@@ -125,8 +126,9 @@ export function classifyHashPair(
 // nested) would otherwise make `existing[group][entry]` undefined for every
 // entry, silently bootstrap-clearing every stale flag in the group. Reject the
 // whole class before reading a single value. loadSourceHashes runs it on every
-// file it reads; it is exported for a caller holding a value from elsewhere.
-export function validateContainerShape(
+// file it reads, and updateSourceHashes on the value it is handed, which a
+// caller's type cast does not make well-formed either.
+function validateContainerShape(
   existing: unknown,
   fileLabel: string,
 ): asserts existing is SourceHashes {
@@ -153,6 +155,78 @@ export function validateContainerShape(
       }
     }
   }
+}
+
+// One translated string a tracker found in its catalogs: the sidecar
+// coordinates it is stored under, and the texts (not their hashes) of the
+// source it was translated from and of the translation.
+export interface TranslationPair {
+  group: string;
+  entry: string;
+  source: string;
+  translation: string;
+}
+
+// A pair whose source moved under a still-original translation. `staleFrom` is
+// the hash of the source it was translated from and `sourceHash` the current
+// source's, so a caller can name the exact source change it sits on. The rest
+// is the caller's own pair, so it can report in its own terms without
+// recovering them from `group` and `entry`.
+export type StaleTranslation<P extends TranslationPair = TranslationPair> =
+  P & { staleFrom: string; sourceHash: string };
+
+export interface SourceHashUpdate<P extends TranslationPair = TranslationPair> {
+  // The sidecar to write back: exactly the pairs this run named.
+  updated: SourceHashes;
+  // In the order the pairs were given.
+  stale: StaleTranslation<P>[];
+}
+
+// The walk every tracker runs over its catalogs, once per run. A group or
+// entry absent from `pairs` is absent from `updated`, so the sidecar forgets a
+// removed string or locale, and a group with no pairs is not written. A pair
+// named twice throws: its second outcome would silently replace the first.
+//
+// Own keys only, into null-prototype maps: a group or entry named like a
+// member every object inherits is data. Read through ordinary property access,
+// "constructor" resolves to Object's and throws as a malformed entry; assigned
+// into an ordinary object, "__proto__" sets the prototype and the fingerprint
+// is lost from the file.
+export function updateSourceHashes<P extends TranslationPair>(
+  existing: SourceHashes,
+  pairs: Iterable<P>,
+  fileLabel: string,
+): SourceHashUpdate<P> {
+  validateContainerShape(existing, fileLabel);
+  const updated = Object.create(null) as SourceHashes;
+  const stale: StaleTranslation<P>[] = [];
+  for (const pair of pairs) {
+    const { group, entry } = pair;
+    const locator = `${group}.${entry}`;
+    let updatedGroup = ownValue(updated, group);
+    if (updatedGroup === undefined) {
+      updatedGroup = Object.create(null) as Record<string, string>;
+      updated[group] = updatedGroup;
+    } else if (Object.hasOwn(updatedGroup, entry)) {
+      throw new Error(
+        `Duplicate ${fileLabel} entry for ${locator}: each pair may be named once per run.`,
+      );
+    }
+    const storedGroup = ownValue(existing, group);
+    const sourceHash = hashValue(pair.source);
+    const outcome = classifyHashPair(
+      storedGroup === undefined ? undefined : ownValue(storedGroup, entry),
+      sourceHash,
+      hashValue(pair.translation),
+      locator,
+      fileLabel,
+    );
+    updatedGroup[entry] = outcome.value;
+    if (outcome.staleFrom !== undefined) {
+      stale.push({ ...pair, staleFrom: outcome.staleFrom, sourceHash });
+    }
+  }
+  return { updated, stale };
 }
 
 // Reads and validates a sidecar. Its errors name the file by its basename, the
@@ -197,6 +271,10 @@ export function renderSourceHashes(hashes: SourceHashes): string {
     ordered[group] = inner;
   }
   return `${JSON.stringify(ordered, null, 2)}\n`;
+}
+
+function ownValue<T>(map: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
