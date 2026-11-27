@@ -10,7 +10,7 @@ import {
   REFRESH_SENTINEL,
   renderSourceHashes,
   type SourceHashes,
-  validateContainerShape,
+  updateSourceHashes,
 } from "../src/source-hashes.ts";
 
 const LABEL = "translation-hashes.json";
@@ -120,14 +120,32 @@ describe("classifyHashPair", () => {
   });
 });
 
-describe("validateContainerShape", () => {
+describe("updateSourceHashes: the sidecar it is handed", () => {
+  const pairs = [
+    { group: "es", entry: "a", source: "Hello", translation: "Hola" },
+  ];
+
   it("throws on every malformed container shape, prefixed with the fileLabel", () => {
     for (const bad of MALFORMED_CONTAINERS) {
       assert.throws(
-        () => validateContainerShape(bad, LABEL),
+        () => updateSourceHashes(bad as SourceHashes, pairs, LABEL),
         /Malformed translation-hashes\.json/,
       );
     }
+  });
+
+  it("checks the whole container, not only the groups the pairs name", () => {
+    // A damaged group for a locale the catalogs no longer carry would be
+    // dropped on write; throwing instead says the file was edited wrongly.
+    assert.throws(
+      () =>
+        updateSourceHashes(
+          { es: {}, de: "refresh" } as unknown as SourceHashes,
+          pairs,
+          LABEL,
+        ),
+      /group "de" must be an object/,
+    );
   });
 
   it("refuses a container that is an object without holding its entries as properties", () => {
@@ -146,19 +164,23 @@ describe("validateContainerShape", () => {
       ],
       [{ fr: new Date(0) }, /group "fr" must be an object .* got Date\./],
     ] as const) {
-      assert.throws(() => validateContainerShape(bad, LABEL), message);
+      assert.throws(
+        () => updateSourceHashes(bad as unknown as SourceHashes, pairs, LABEL),
+        message,
+      );
     }
   });
 
   it("accepts an object with no prototype", () => {
     const hashes = Object.create(null) as SourceHashes;
-    hashes["fr"] = { greeting: "deadbeef:cafebabe" };
-    assert.doesNotThrow(() => validateContainerShape(hashes, LABEL));
+    hashes["es"] = { a: "deadbeef:cafebabe" };
+    assert.doesNotThrow(() => updateSourceHashes(hashes, pairs, LABEL));
   });
 
-  it("accepts a well-formed two-level container", () => {
-    assert.doesNotThrow(() =>
-      validateContainerShape({ es: { a: "deadbeef:cafebabe" } }, LABEL),
+  it("throws on a malformed stored value, naming the file and group.entry", () => {
+    assert.throws(
+      () => updateSourceHashes({ es: { a: "refesh" } }, pairs, LABEL),
+      /^Error: Malformed translation-hashes\.json entry for es\.a: "refesh"/,
     );
   });
 });
@@ -251,109 +273,215 @@ describe("hashValue", () => {
   });
 });
 
-// The loop the README shows, run end to end: a reword flags the translation,
-// and both ways of clearing the flag clear it.
-describe("a tracker over one message catalog", () => {
-  function own<T>(
-    map: Record<string, T> | undefined,
-    key: string,
-  ): T | undefined {
-    return map !== undefined && Object.hasOwn(map, key) ? map[key] : undefined;
-  }
-
-  function track(
+describe("updateSourceHashes: a run over a tracker's pairs", () => {
+  // Pairs built from a source catalog and per-locale translations, the way the
+  // README's tracker builds them.
+  function pairsOf(
     source: Record<string, string>,
     translations: Record<string, Record<string, string>>,
-    existing: SourceHashes,
-  ): { stale: string[]; updated: SourceHashes } {
-    const stale: string[] = [];
-    const updated = Object.create(null) as SourceHashes;
-    for (const [locale, messages] of Object.entries(translations)) {
-      const group = Object.create(null) as Record<string, string>;
-      for (const [key, text] of Object.entries(messages)) {
-        const sourceText = own(source, key);
-        if (sourceText === undefined) continue;
-        const outcome = classifyHashPair(
-          own(own(existing, locale), key),
-          hashValue(sourceText),
-          hashValue(text),
-          `${locale}.${key}`,
-          LABEL,
-        );
-        group[key] = outcome.value;
-        if (outcome.stale) stale.push(`${locale}.${key}`);
-      }
-      updated[locale] = group;
-    }
-    return { stale, updated };
+  ): { group: string; entry: string; source: string; translation: string }[] {
+    return Object.entries(translations).flatMap(([group, messages]) =>
+      Object.entries(messages).map(([entry, translation]) => ({
+        group,
+        entry,
+        source: source[entry] ?? "",
+        translation,
+      })),
+    );
   }
 
-  it("flags a reword, then clears it by an edit or by refresh", () => {
-    const fr = { fr: { greeting: "Bonjour", farewell: "Au revoir" } };
-    const first = track({ greeting: "Hello", farewell: "Goodbye" }, fr, {});
+  const fr = { fr: { greeting: "Bonjour", farewell: "Au revoir" } };
+  const original = { greeting: "Hello", farewell: "Goodbye" };
+  const reworded = { greeting: "Hi there", farewell: "Goodbye" };
+  const first = updateSourceHashes({}, pairsOf(original, fr), LABEL);
+
+  it("records a first sighting as fresh, with both hashes", () => {
     assert.deepEqual(first.stale, []);
-
-    const reworded = { greeting: "Hi there", farewell: "Goodbye" };
-    const second = track(reworded, fr, first.updated);
-    assert.deepEqual(second.stale, ["fr.greeting"]);
-    // Still stale on the next run: nothing has touched the translation.
-    assert.deepEqual(track(reworded, fr, second.updated).stale, [
-      "fr.greeting",
-    ]);
-
-    const edited = { fr: { greeting: "Salut", farewell: "Au revoir" } };
-    assert.deepEqual(track(reworded, edited, second.updated).stale, []);
-
-    const affirmed: SourceHashes = {
-      fr: { ...second.updated["fr"], greeting: REFRESH_SENTINEL },
-    };
-    assert.deepEqual(track(reworded, fr, affirmed).stale, []);
+    assert.deepEqual(
+      { ...first.updated["fr"] },
+      {
+        greeting: `${hashValue("Hello")}:${hashValue("Bonjour")}`,
+        farewell: `${hashValue("Goodbye")}:${hashValue("Au revoir")}`,
+      },
+    );
   });
 
-  it("reads a key named like an inherited member as unseen, not as damage", () => {
+  it("rewrites an unchanged sidecar to the same value", () => {
+    const again = updateSourceHashes(
+      first.updated,
+      pairsOf(original, fr),
+      LABEL,
+    );
+    assert.equal(
+      renderSourceHashes(again.updated),
+      renderSourceHashes(first.updated),
+    );
+  });
+
+  it("flags a reword with the source it was translated from, and keeps flagging it", () => {
+    // The stored pair must survive the stale run unchanged, or the next run
+    // would read the reword as already seen and clear the flag.
+    const second = updateSourceHashes(
+      first.updated,
+      pairsOf(reworded, fr),
+      LABEL,
+    );
+    assert.deepEqual(second.stale, [
+      {
+        group: "fr",
+        entry: "greeting",
+        source: "Hi there",
+        translation: "Bonjour",
+        staleFrom: hashValue("Hello"),
+        sourceHash: hashValue("Hi there"),
+      },
+    ]);
+    assert.deepEqual(second.updated, first.updated);
+    const third = updateSourceHashes(
+      second.updated,
+      pairsOf(reworded, fr),
+      LABEL,
+    );
+    assert.deepEqual(
+      third.stale.map((s) => s.entry),
+      ["greeting"],
+    );
+  });
+
+  it("clears the flag when the translation is edited", () => {
+    const edited = { fr: { greeting: "Salut", farewell: "Au revoir" } };
+    const out = updateSourceHashes(
+      first.updated,
+      pairsOf(reworded, edited),
+      LABEL,
+    );
+    assert.deepEqual(out.stale, []);
+    assert.equal(
+      out.updated["fr"]?.["greeting"],
+      `${hashValue("Hi there")}:${hashValue("Salut")}`,
+    );
+  });
+
+  it("clears the flag when a reviewer writes the refresh sentinel", () => {
+    const affirmed: SourceHashes = {
+      fr: { ...first.updated["fr"], greeting: REFRESH_SENTINEL },
+    };
+    const out = updateSourceHashes(affirmed, pairsOf(reworded, fr), LABEL);
+    assert.deepEqual(out.stale, []);
+    assert.equal(
+      out.updated["fr"]?.["greeting"],
+      `${hashValue("Hi there")}:${hashValue("Bonjour")}`,
+    );
+  });
+
+  it("drops a group and an entry the pairs no longer name", () => {
+    // A removed locale or key must leave the file, or its fingerprint would
+    // outlive the string and greet a re-added one with a stale verdict.
+    const existing: SourceHashes = {
+      ...first.updated,
+      de: { greeting: "deadbeef:cafebabe" },
+    };
+    const out = updateSourceHashes(
+      existing,
+      pairsOf(original, { fr: { greeting: "Bonjour" } }),
+      LABEL,
+    );
+    assert.deepEqual(Object.keys(out.updated), ["fr"]);
+    assert.deepEqual(Object.keys(out.updated["fr"] ?? {}), ["greeting"]);
+  });
+
+  it("writes no group for a run with no pairs", () => {
+    assert.equal(
+      renderSourceHashes(updateSourceHashes(first.updated, [], LABEL).updated),
+      "{}\n",
+    );
+  });
+
+  it("returns the caller's own fields on a stale pair", () => {
+    // A tracker whose entry key encodes its own axes reads them back from the
+    // pair it built instead of parsing `entry`.
+    const pair = {
+      group: "ios",
+      entry: "fr/subtitle",
+      source: "Hi there",
+      translation: "Bonjour",
+      locale: "fr",
+      field: "subtitle",
+    };
+    const stored = {
+      ios: { "fr/subtitle": `${hashValue("Hello")}:${hashValue("Bonjour")}` },
+    };
+    const { stale } = updateSourceHashes(stored, [pair], LABEL);
+    assert.deepEqual(
+      stale.map((s) => [s.locale, s.field]),
+      [["fr", "subtitle"]],
+    );
+  });
+
+  it("throws when a pair is named twice", () => {
+    // Only one outcome can be stored; keeping either would hide the other.
+    const pair = {
+      group: "fr",
+      entry: "greeting",
+      source: "a",
+      translation: "b",
+    };
+    assert.throws(
+      () =>
+        updateSourceHashes({}, [pair, { ...pair, translation: "c" }], LABEL),
+      /^Error: Duplicate translation-hashes\.json entry for fr\.greeting/,
+    );
+  });
+
+  it("reads a group or entry named like an inherited member as unseen, not as damage", () => {
     // Without own-key lookups, "constructor" resolves to Object's own
     // constructor, which is neither undefined nor a hash pair, and the run
     // throws on a sidecar that is fine.
-    const out = track(
-      { constructor: "Build" },
-      { fr: { constructor: "Construire" } },
-      { fr: {} },
-    );
-    assert.deepEqual(out.stale, []);
-    assert.match(
-      out.updated["fr"]?.["constructor"] ?? "",
-      /^[0-9a-f]{8}:[0-9a-f]{8}$/,
-    );
+    const names: [string, string][] = [
+      ["fr", "constructor"],
+      ["constructor", "greeting"],
+      ["toString", "valueOf"],
+    ];
+    for (const [group, entry] of names) {
+      const out = updateSourceHashes(
+        { fr: {} },
+        [{ group, entry, source: "Build", translation: "Construire" }],
+        LABEL,
+      );
+      assert.deepEqual(out.stale, []);
+      const written = Object.hasOwn(out.updated, group)
+        ? out.updated[group]
+        : undefined;
+      assert.ok(written !== undefined && Object.hasOwn(written, entry));
+      assert.match(written[entry] ?? "", /^[0-9a-f]{8}:[0-9a-f]{8}$/);
+    }
   });
 
   it("keeps a group and an entry named __proto__ through a write and a reword", async () => {
     // JSON.parse stores "__proto__" as an own key, but assigning it into an
     // ordinary object sets the prototype instead, so its fingerprint would be
     // lost on write and the next reword would read as a first sighting.
-    const source = JSON.parse('{"__proto__": "Hello"}') as Record<
-      string,
-      string
-    >;
-    const translations = JSON.parse(
-      '{"__proto__": {"__proto__": "Bonjour"}}',
-    ) as Record<string, Record<string, string>>;
-    const first = track(source, translations, {});
+    const pair = (source: string) => ({
+      group: "__proto__",
+      entry: "__proto__",
+      source,
+      translation: "Bonjour",
+    });
+    const written = updateSourceHashes({}, [pair("Hello")], LABEL);
 
     const dir = await mkdtemp(join(tmpdir(), "stale-translations-"));
     const path = join(dir, LABEL);
-    await writeFile(path, renderSourceHashes(first.updated), "utf-8");
+    await writeFile(path, renderSourceHashes(written.updated), "utf-8");
     const stored = await loadSourceHashes(path);
     assert.match(
       JSON.stringify(stored),
       /^\{"__proto__":\{"__proto__":"[0-9a-f]{8}:[0-9a-f]{8}"\}\}$/,
     );
 
-    const reworded = JSON.parse('{"__proto__": "Hi there"}') as Record<
-      string,
-      string
-    >;
-    assert.deepEqual(track(reworded, translations, stored).stale, [
-      "__proto__.__proto__",
-    ]);
+    const reworded = updateSourceHashes(stored, [pair("Hi there")], LABEL);
+    assert.deepEqual(
+      reworded.stale.map((s) => `${s.group}.${s.entry}`),
+      ["__proto__.__proto__"],
+    );
   });
 });

@@ -25,7 +25,7 @@ the ci-baseline commit this repository's workflows pin.
 Open an issue describing the problem first. The sidecar format - SHA-256 cut
 to 8 hex characters, the `:` separator and the `"refresh"` sentinel - is held
 fixed, because changing any of it makes every existing sidecar read as stale.
-Catalog formats are left to the caller's own loop by design. A short
+Catalog formats are left to the caller by design. A short
 discussion up front saves rework. A fix for a vulnerability goes through
 [SECURITY.md](SECURITY.md) instead.
 

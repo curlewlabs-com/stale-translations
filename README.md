@@ -18,11 +18,13 @@ of a staleness tracker that does not depend on your catalog format:
 - `loadSourceHashes(path)` and `renderSourceHashes(hashes)` - read and write
   the sidecar. Reading validates the whole file before returning it; writing
   sorts it so an unchanged run rewrites the same bytes.
+- `updateSourceHashes(existing, pairs, fileLabel)` - one run over your
+  catalogs: classifies every (source, translation) pair you name against the
+  stored sidecar, and returns the sidecar to write back and the stale pairs.
 - `REFRESH_SENTINEL` - the value a reviewer writes to affirm a translation.
 
-You write the loop that walks your own catalogs: which strings are
-translations, which source string each one came from, and what to do with the
-stale list. That loop is a few lines, shown below.
+You say which strings are translations, which source string each one came
+from, where each is stored in the sidecar, and what to do with the stale list.
 
 ## Why it exists
 
@@ -59,7 +61,7 @@ This package is not published to the npm registry. Install a release's tarball
 from GitHub, which pins it by the integrity hash your lockfile records:
 
 ```sh
-npm install https://github.com/curlewlabs-com/stale-translations/releases/download/v0.1.0/curlewlabs-com-stale-translations-0.1.0.tgz
+npm install https://github.com/curlewlabs-com/stale-translations/releases/download/v0.2.0/curlewlabs-com-stale-translations-0.2.0.tgz
 ```
 
 Each release's notes give its tarball's SHA-512 integrity, and the tarball has a
@@ -71,56 +73,38 @@ A tracker over one source catalog and its translations:
 ```ts
 import { writeFile } from "node:fs/promises";
 import {
-  classifyHashPair,
-  hashValue,
   loadSourceHashes,
   renderSourceHashes,
-  type SourceHashes,
+  updateSourceHashes,
 } from "@curlewlabs-com/stale-translations";
 
 const SIDECAR = "l10n/translation-hashes.json";
 
 // Your catalogs, loaded however you load them.
-const source: Record<string, string> = { greeting: "Hi there" };
-const translations: Record<string, Record<string, string>> = {
-  fr: { greeting: "Bonjour" },
-};
+const source = new Map([["greeting", "Hi there"]]);
+const translations = new Map([["fr", new Map([["greeting", "Bonjour"]])]]);
 
-// Own keys only: a message key such as "constructor" must not resolve to a
-// member every object inherits.
-function own<T>(
-  map: Record<string, T> | undefined,
-  key: string,
-): T | undefined {
-  return map !== undefined && Object.hasOwn(map, key) ? map[key] : undefined;
-}
-
-const existing = await loadSourceHashes(SIDECAR);
-// Null-prototype maps, so a key named `__proto__` is stored like any other.
-const updated = Object.create(null) as SourceHashes;
-const stale: string[] = [];
-
-for (const [locale, messages] of Object.entries(translations)) {
-  const group = Object.create(null) as Record<string, string>;
-  for (const [key, text] of Object.entries(messages)) {
-    const sourceText = own(source, key);
-    if (sourceText === undefined) continue;
-    const outcome = classifyHashPair(
-      own(own(existing, locale), key),
-      hashValue(sourceText),
-      hashValue(text),
-      `${locale}.${key}`,
-      "translation-hashes.json",
-    );
-    group[key] = outcome.value;
-    if (outcome.stale) stale.push(`${locale}.${key}`);
+function* pairs() {
+  for (const [locale, messages] of translations) {
+    for (const [key, translation] of messages) {
+      const sourceText = source.get(key);
+      if (sourceText === undefined) continue;
+      yield { group: locale, entry: key, source: sourceText, translation };
+    }
   }
-  updated[locale] = group;
 }
+
+const { updated, stale } = updateSourceHashes(
+  await loadSourceHashes(SIDECAR),
+  pairs(),
+  "translation-hashes.json",
+);
 
 await writeFile(SIDECAR, renderSourceHashes(updated));
 if (stale.length > 0) {
-  console.error(`stale: ${stale.join(", ")}`);
+  console.error(
+    `stale: ${stale.map((s) => `${s.group}.${s.entry}`).join(", ")}`,
+  );
   process.exitCode = 1;
 }
 ```
@@ -131,9 +115,12 @@ The sidecar alone does not show a reword: a stale entry keeps its stored pair,
 so the file a run writes after a reword is byte for byte the one before it.
 
 The first run, with no sidecar, records every translation as fresh: the
-tracker can only see rewording that happens after it starts. A string that is
-no longer visited (a removed key or locale) is left out of `updated`, so the
-sidecar forgets it.
+tracker can only see rewording that happens after it starts. A pair the run
+does not name (a removed key or locale) is left out of `updated`, so the
+sidecar forgets it. Naming the same group and entry twice in one run throws.
+
+Group and entry names are read as data: a key named `constructor` or
+`__proto__` is stored and compared like any other.
 
 ### The sidecar
 
@@ -147,7 +134,7 @@ sidecar forgets it.
 ```
 
 The shape is `{ group: { entry: value } }`, with group and entry chosen by your
-loop: locale and message key above, or a platform and a `locale/field` path
+pairs: locale and message key above, or a platform and a `locale/field` path
 for per-field text files. Each value is `"<source hash>:<translation hash>"`,
 or `"refresh"`.
 
@@ -164,9 +151,14 @@ or `"refresh"`.
 Clearing a stale entry takes one of two things: edit the translation, or
 replace its value with `"refresh"` and run the tracker again.
 
-`classifyHashPair` returns `{ value, stale, staleFrom? }`. `value` goes in the
-sidecar you write back. `staleFrom`, set only when stale, is the source hash
-the translation was made from.
+Each entry of `stale` is a copy of the pair you passed, with `staleFrom`, the hash of
+the source the translation was made from, and `sourceHash`, the current
+source's. Extra fields on your pairs come back with it, so a report can use
+your own names for a string without parsing `entry`.
+
+`classifyHashPair` is that decision for one string, if you keep the sidecar
+some other way: it returns `{ value, stale, staleFrom? }`, where `value` goes
+in the sidecar you write back.
 
 ### Errors
 
@@ -176,11 +168,12 @@ basename. Any other read error is rethrown as the runtime raised it, and a file
 that is not JSON throws the parser's `SyntaxError`; neither is sure to name the
 file, so a tracker reading several sidecars says which one when it catches
 them.
-`classifyHashPair` throws for a value that is neither a hash pair nor
-`"refresh"`, naming `fileLabel` and `locator`; pass the sidecar's file name and
-whatever lets a reader find the string. `validateContainerShape(value, label)`
-is the container check on its own, for a sidecar value you did not read with
-`loadSourceHashes`.
+`updateSourceHashes` checks the container it is handed the same way, so a
+value you did not read with `loadSourceHashes` is checked too, and throws for
+a stored value that is neither a hash pair nor `"refresh"`. Its errors name
+`fileLabel` and the string as `group.entry`; pass the sidecar's file name.
+`classifyHashPair` throws for the same values, naming the `fileLabel` and
+`locator` you pass it.
 
 ## Runtime requirements
 

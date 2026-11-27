@@ -1,6 +1,6 @@
 {
   "name": "@curlewlabs-com/stale-translations",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Flag translations whose source text was reworded after they were translated, from a small hash sidecar kept beside the catalogs.",
   "license": "MIT OR Apache-2.0",
   "author": "Curlew Labs",
